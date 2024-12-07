@@ -16,8 +16,9 @@ Fixtures:
 # Standard library imports
 from builtins import range
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+import uuid
 
 # Third-party imports
 import pytest
@@ -45,14 +46,13 @@ engine = create_async_engine(TEST_DATABASE_URL, echo=settings.debug)
 AsyncTestingSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 AsyncSessionScoped = scoped_session(AsyncTestingSessionLocal)
 
-
 @pytest.fixture
 def email_service():
-    # Assuming the TemplateManager does not need any arguments for initialization
     template_manager = TemplateManager()
-    email_service = EmailService(template_manager=template_manager)
-    return email_service
-
+    with patch("app.utils.smtp_connection.SMTPClient") as MockSMTPClient:
+        mock_smtp_client = MockSMTPClient.return_value
+        mock_smtp_client.send_email = AsyncMock(return_value=None)
+        return EmailService(template_manager=template_manager)
 
 # this is what creates the http client for your api tests
 @pytest.fixture(scope="function")
@@ -215,11 +215,11 @@ async def manager_user(db_session: AsyncSession):
 @pytest.fixture
 def user_base_data():
     return {
-        "username": "john_doe_123",
+        "nickname": "john_doe",  # Add nickname key
         "email": "john.doe@example.com",
         "full_name": "John Doe",
         "bio": "I am a software engineer with over 5 years of experience.",
-        "profile_picture_url": "https://example.com/profile_pictures/john_doe.jpg"
+        "profile_picture_url": "https://example.com/profile_pictures/john_doe.jpg",
     }
 
 @pytest.fixture
@@ -234,30 +234,64 @@ def user_base_data_invalid():
 
 
 @pytest.fixture
-def user_create_data(user_base_data):
-    return {**user_base_data, "password": "SecurePassword123!"}
+def user_create_data():
+    return {
+        "nickname": "john_doe",  # Add nickname key
+        "email": "john.doe@example.com",
+        "full_name": "John Doe",
+        "password": "SecurePassword123!",  # Add password key
+        "bio": "I am a software engineer with over 5 years of experience.",
+        "profile_picture_url": "https://example.com/profile_pictures/john_doe.jpg",
+    }
 
 @pytest.fixture
 def user_update_data():
     return {
+        "nickname": "john_updated",
         "email": "john.doe.new@example.com",
         "full_name": "John H. Doe",
+        "first_name": "John",  # Add this key
         "bio": "I specialize in backend development with Python and Node.js.",
-        "profile_picture_url": "https://example.com/profile_pictures/john_doe_updated.jpg"
+        "profile_picture_url": "https://example.com/profile_pictures/john_doe_updated.jpg",
     }
 
 @pytest.fixture
 def user_response_data():
     return {
-        "id": "unique-id-string",
+        "id": uuid.UUID("3039bbf1-4788-4864-bc7d-c2bc56c536a2"),  # Use UUID object here
         "username": "testuser",
         "email": "test@example.com",
         "last_login_at": datetime.now(),
         "created_at": datetime.now(),
         "updated_at": datetime.now(),
-        "links": []
+        "links": [],
     }
+
 
 @pytest.fixture
 def login_request_data():
-    return {"username": "john_doe_123", "password": "SecurePassword123!"}
+    return {
+        "email": "john.doe@example.com",  # Add email field
+        "username": "john_doe_123",
+        "password": "SecurePassword123!",
+    }
+
+from datetime import timedelta
+
+@pytest.fixture
+async def user_token(verified_user):
+    # Generate a token for a regular user
+    data = {"sub": verified_user.email, "role": "USER"}  # Ensure the role is USER
+    return create_access_token(data=data)
+
+@pytest.fixture
+async def admin_token(admin_user):
+    # Generate a token for the admin user
+    data = {"sub": admin_user.email, "role": "ADMIN"}  # Ensure the role is ADMIN
+    return create_access_token(data=data)
+
+@pytest.fixture
+async def manager_token(manager_user):
+    # Generate a token for the manager user
+    data = {"sub": manager_user.email, "role": "MANAGER"}
+    return create_access_token(data=data)
