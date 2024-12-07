@@ -1,7 +1,9 @@
 from builtins import str
 import pytest
+import uuid
 from httpx import AsyncClient
 from app.main import app
+from app.services.user_service import UserService
 from app.models.user_model import User
 from app.utils.nickname_gen import generate_nickname
 from app.utils.security import hash_password
@@ -92,7 +94,7 @@ async def test_login_success(async_client, verified_user):
         "password": "MySuperPassword$1234"
     }
     response = await async_client.post("/login/", data=urlencode(form_data), headers={"Content-Type": "application/x-www-form-urlencoded"})
-    
+
     # Check for successful login response
     assert response.status_code == 200
     data = response.json()
@@ -189,3 +191,229 @@ async def test_list_users_unauthorized(async_client, user_token):
         headers={"Authorization": f"Bearer {user_token}"}
     )
     assert response.status_code == 403  # Forbidden, as expected for regular user
+
+@pytest.mark.asyncio
+async def test_update_user_invalid_data(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_data = {"email": "not-an-email"}
+    response = await async_client.put("/users/valid-user-id", json=invalid_data, headers=headers)
+    assert response.status_code == 422  # Unprocessable Entity
+
+@pytest.mark.asyncio
+async def test_get_user_not_found(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_user_id = str(uuid.uuid4())  # Generate a valid UUID
+    response = await async_client.get(f"/users/{invalid_user_id}", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found"
+
+@pytest.mark.asyncio
+async def test_delete_user_not_found(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_user_id = str(uuid.uuid4())  # Generate a valid UUID
+    response = await async_client.delete(f"/users/{invalid_user_id}", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found"
+
+@pytest.mark.asyncio
+async def test_verify_email_invalid_token(async_client, admin_token):
+    invalid_user_id = str(uuid.uuid4())
+    response = await async_client.get(f"/verify-email/{invalid_user_id}/invalid-token")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or expired verification token"
+
+@pytest.mark.asyncio
+async def test_verify_email_with_invalid_token(db_session, unverified_user):
+    invalid_token = "fake-token"
+    result = await UserService.verify_email_with_token(db_session, unverified_user.id, invalid_token)
+    assert result is False, "Verification with an invalid token should return False"
+
+@pytest.mark.asyncio
+async def test_unlock_user_account_already_unlocked(db_session, verified_user):
+    result = await UserService.unlock_user_account(db_session, verified_user.id)
+    assert result is False, "Unlocking an already unlocked user should return False"
+
+@pytest.mark.asyncio
+async def test_reset_password_nonexistent_user(db_session):
+    fake_user_id = uuid.uuid4()
+    result = await UserService.reset_password(db_session, fake_user_id, "NewPassword123!")
+    assert result is False, "Resetting password for a nonexistent user should return False"
+
+@pytest.mark.asyncio
+async def test_delete_nonexistent_user(db_session):
+    fake_user_id = uuid.uuid4()
+    result = await UserService.delete(db_session, fake_user_id)
+    assert result is False, "Deleting a nonexistent user should return False"
+
+@pytest.mark.asyncio
+async def test_update_user_not_found(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    updated_data = {"email": "updated@example.com"}
+    non_existent_user_id = "00000000-0000-0000-0000-000000000000"
+
+    response = await async_client.put(f"/users/{non_existent_user_id}", json=updated_data, headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found"
+
+@pytest.mark.asyncio
+async def test_delete_user_access_denied(async_client, user_token):
+    headers = {"Authorization": f"Bearer {user_token}"}
+    target_user_id = "00000000-0000-0000-0000-000000000000"
+
+    response = await async_client.delete(f"/users/{target_user_id}", headers=headers)
+    assert response.status_code == 403
+
+@pytest.mark.asyncio
+async def test_list_users_unauthorized(async_client):
+    response = await async_client.get("/users/")
+    assert response.status_code == 401  # Unauthorized, no token provided
+
+@pytest.mark.asyncio
+async def test_register_user_duplicate_email(async_client, verified_user):
+    user_data = {
+        "email": verified_user.email,
+        "password": "AnotherPassword123!"
+    }
+    response = await async_client.post("/register/", json=user_data)
+    assert response.status_code == 400
+    assert "Email already exists" in response.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_verify_email_invalid_token(async_client):
+    invalid_user_id = str(uuid.uuid4())
+    response = await async_client.get(f"/verify-email/{invalid_user_id}/invalid-token")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or expired verification token"
+
+@pytest.mark.asyncio
+async def test_login_account_locked(async_client, locked_user):
+    form_data = {
+        "username": locked_user.email,
+        "password": "MySuperPassword$1234"
+    }
+    response = await async_client.post(
+        "/login/", data=form_data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    assert response.status_code == 400
+    assert "Account locked due to too many failed login attempts." in response.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_login_user_not_found(async_client):
+    form_data = {
+        "username": "nonexistentuser@domain.com",
+        "password": "DoesNotMatter123!"
+    }
+    response = await async_client.post(
+        "/login/", data=form_data, headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    assert response.status_code == 401
+    assert "Incorrect email or password." in response.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_get_user_not_found(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_user_id = str(uuid.uuid4())
+
+    response = await async_client.get(f"/users/{invalid_user_id}", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "User not found"
+
+@pytest.mark.asyncio
+async def test_update_user_invalid_data(async_client, admin_user, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_data = {"email": "not-an-email"}
+
+    response = await async_client.put(f"/users/{admin_user.id}", json=invalid_data, headers=headers)
+    assert response.status_code == 422  # Unprocessable Entity
+
+@pytest.mark.asyncio
+async def test_delete_user_already_deleted(async_client, admin_user, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # First, delete the user
+    delete_response = await async_client.delete(f"/users/{admin_user.id}", headers=headers)
+    assert delete_response.status_code == 204
+
+    # Attempt to delete again
+    delete_response_again = await async_client.delete(f"/users/{admin_user.id}", headers=headers)
+    assert delete_response_again.status_code == 404
+    assert delete_response_again.json()["detail"] == "User not found"
+
+@pytest.mark.asyncio
+async def test_get_user_unauthorized_access(async_client, user_token):
+    headers = {"Authorization": f"Bearer {user_token}"}
+    user_id = str(uuid.uuid4())  # Random user UUID
+    response = await async_client.get(f"/users/{user_id}", headers=headers)
+
+    assert response.status_code == 403
+    # Adjust assertion to handle both expected messages
+    assert response.json()["detail"] in ["Access forbidden for your role", "Operation not permitted"]
+
+@pytest.mark.asyncio
+async def test_delete_user_access_unauthorized(async_client, user_token):
+    invalid_headers = {"Authorization": f"Bearer {user_token}"}
+    user_id = "00000000-0000-0000-0000-000000000000"
+    response = await async_client.delete(f"/users/{user_id}", headers=invalid_headers)
+    assert response.status_code == 403
+
+@pytest.mark.asyncio
+async def test_create_user_missing_fields(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    incomplete_user_data = {
+        "email": "incomplete@example.com"  # Missing required fields like `password`
+    }
+    response = await async_client.post("/users/", json=incomplete_user_data, headers=headers)
+    assert response.status_code == 422  # Unprocessable Entity
+
+@pytest.mark.asyncio
+async def test_update_user_invalid_input(async_client, admin_user, admin_token):
+    invalid_data = {"email": "invalid-email-format"}
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    response = await async_client.put(f"/users/{admin_user.id}", json=invalid_data, headers=headers)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_verify_email_missing_token(async_client):
+    user_id = "00000000-0000-0000-0000-000000000000"
+    response = await async_client.get(f"/verify-email/{user_id}/")
+    assert response.status_code == 404  # FastAPI will raise 404 for missing route params
+
+@pytest.mark.asyncio
+async def test_get_user_invalid_id(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    invalid_user_id = "invalid-uuid"
+    response = await async_client.get(f"/users/{invalid_user_id}", headers=headers)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_create_user_missing_fields(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    incomplete_user_data = {"email": "missingpassword@example.com"}
+    response = await async_client.post("/users/", json=incomplete_user_data, headers=headers)
+    assert response.status_code == 422
+
+@pytest.mark.asyncio
+async def test_list_users_pagination_edge_cases(async_client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # Case: skip beyond available users
+    response = await async_client.get("/users/?skip=1000&limit=10", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+    # Case: limit=0 (no users returned)
+    response = await async_client.get("/users/?skip=0&limit=0", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+@pytest.mark.asyncio
+async def test_create_user_duplicate_email(async_client, verified_user):
+    user_data = {
+        "email": verified_user.email,
+        "password": "AnotherPassword123!"
+    }
+    response = await async_client.post("/register/", json=user_data)
+
+    # Assertions
+    assert response.status_code == 400
+    assert "Email already exists" in response.json().get("detail", "")

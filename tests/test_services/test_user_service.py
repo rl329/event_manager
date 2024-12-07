@@ -1,5 +1,7 @@
 from builtins import range
+from unittest.mock import AsyncMock, patch
 import pytest
+import uuid
 from sqlalchemy import select
 from app.dependencies import get_settings
 from app.models.user_model import User
@@ -132,7 +134,7 @@ async def test_account_lock_after_failed_logins(db_session, verified_user):
     max_login_attempts = get_settings().max_login_attempts
     for _ in range(max_login_attempts):
         await UserService.login_user(db_session, verified_user.email, "wrongpassword")
-    
+
     is_locked = await UserService.is_account_locked(db_session, verified_user.email)
     assert is_locked, "The account should be locked after the maximum number of failed login attempts."
 
@@ -156,3 +158,54 @@ async def test_unlock_user_account(db_session, locked_user):
     assert unlocked, "The account should be unlocked"
     refreshed_user = await UserService.get_by_id(db_session, locked_user.id)
     assert not refreshed_user.is_locked, "The user should no longer be locked"
+
+@pytest.mark.asyncio
+async def test_update_user_not_found(db_session):
+    fake_user_id = uuid.uuid4()
+    update_data = {"email": "updated_email@example.com"}
+    result = await UserService.update(db_session, fake_user_id, update_data)
+    assert result is None, "Updating a non-existent user should return None"
+
+@pytest.mark.asyncio
+async def test_verify_email_invalid_token(db_session, user):
+    result = await UserService.verify_email_with_token(db_session, user.id, "wrong-token")
+    assert result is False, "Verification should fail if the token is invalid"
+
+@pytest.mark.asyncio
+async def test_verify_email_user_not_found(db_session):
+    fake_user_id = uuid.uuid4()
+    result = await UserService.verify_email_with_token(db_session, fake_user_id, "some-token")
+    assert result is False, "Verification should fail if the user is not found"
+
+@pytest.mark.asyncio
+async def test_update_user_not_found(db_session):
+    fake_user_id = uuid.uuid4()
+    updated_data = {"first_name": "UpdatedName"}
+    result = await UserService.update(db_session, fake_user_id, updated_data)
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_delete_user_not_found(db_session):
+    fake_user_id = uuid.uuid4()
+    result = await UserService.delete(db_session, fake_user_id)
+    assert result is False
+
+@pytest.mark.asyncio
+async def test_create_user_with_invalid_nickname(db_session, email_service):
+    invalid_data = {
+        "nickname": "a!",  # Invalid: too short and contains a special character
+        "email": "test_invalid_nickname@example.com",
+        "password": "ValidPass123!"
+    }
+    user = await UserService.create(db_session, invalid_data, email_service)
+    assert user is None, "User creation should fail with invalid nickname."
+
+@pytest.mark.asyncio
+async def test_create_user_with_valid_nickname(db_session, email_service):
+    valid_data = {
+        "nickname": "validNickname123",
+        "email": "valid_nickname@example.com",
+        "password": "ValidPass123!"
+    }
+    user = await UserService.create(db_session, valid_data, email_service)
+    assert user is not None, "User creation should succeed with a valid nickname."

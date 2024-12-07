@@ -15,6 +15,7 @@ from uuid import UUID
 from app.services.email_service import EmailService
 from app.models.user_model import UserRole
 import logging
+import re
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class UserService:
             session.add(new_user)
             await session.commit()
             await email_service.send_verification_email(new_user)
-            
+
             return new_user
         except ValidationError as e:
             logger.error(f"Validation error during user creation: {e}")
@@ -114,7 +115,7 @@ class UserService:
     @classmethod
     async def register_user(cls, session: AsyncSession, user_data: Dict[str, str], get_email_service) -> Optional[User]:
         return await cls.create(session, user_data, get_email_service)
-    
+
 
     @classmethod
     async def login_user(cls, session: AsyncSession, email: str, password: str) -> Optional[User]:
@@ -181,7 +182,7 @@ class UserService:
         result = await session.execute(query)
         count = result.scalar()
         return count
-    
+
     @classmethod
     async def unlock_user_account(cls, session: AsyncSession, user_id: UUID) -> bool:
         user = await cls.get_by_id(session, user_id)
@@ -192,3 +193,35 @@ class UserService:
             await session.commit()
             return True
         return False
+
+    @classmethod
+    def is_valid_username(cls, username: str) -> bool:
+        """
+        Ensure username meets requirements:
+        - 3 to 20 characters
+        - Only letters, numbers, and underscores
+        """
+        if len(username) < 3 or len(username) > 20:
+            return False
+        if not re.match("^[a-zA-Z0-9_]+$", username):
+            return False
+        return True
+
+    @classmethod
+    def is_valid_password(cls, password: str) -> bool:
+        """
+        Ensure password meets security requirements:
+        - Minimum 8 characters
+        - At least one uppercase, one lowercase, one digit, and one special character
+        """
+        if len(password) < 8:
+            return False
+        if not re.search(r"[A-Z]", password):
+            return False
+        if not re.search(r"[a-z]", password):
+            return False
+        if not re.search(r"[0-9]", password):
+            return False
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+            return False
+        return True
